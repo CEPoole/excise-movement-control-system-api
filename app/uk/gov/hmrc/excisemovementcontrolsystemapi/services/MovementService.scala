@@ -25,14 +25,16 @@ import play.api.libs.json.Json
 import play.api.mvc.Result
 import play.api.mvc.Results.{BadRequest, InternalServerError}
 import uk.gov.hmrc.excisemovementcontrolsystemapi.filters.{MovementFilter, TraderType}
-import uk.gov.hmrc.excisemovementcontrolsystemapi.models.ErrorResponse
+import uk.gov.hmrc.excisemovementcontrolsystemapi.models.{ErrorResponse, ExciseMovementResponse}
 import uk.gov.hmrc.excisemovementcontrolsystemapi.repository.MovementRepository
 import uk.gov.hmrc.excisemovementcontrolsystemapi.repository.model.{Message, Movement}
 import uk.gov.hmrc.excisemovementcontrolsystemapi.utils.DateTimeService
+import uk.gov.hmrc.excisemovementcontrolsystemapi.utils.DateTimeService.DateTimeFormat
 import uk.gov.hmrc.http.HeaderCarrier
 
 import javax.inject.Inject
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.chaining.scalaUtilChainingOps
 import scala.util.control.NonFatal
 
 @Singleton
@@ -118,8 +120,20 @@ class MovementService @Inject() (
       .getMovementByERN(ern, filter)
       .map(movements => filterMovementByTraderType(movements, filter.traderType))
 
-  def streamMovementsByErn(ern: Seq[String]): Source[Movement, NotUsed] =
-    movementRepository.streamMovementsByERN(ern)
+  def streamMovementsByErn(ern: Seq[String]): Source[ExciseMovementResponse, NotUsed] =
+    Source.fromPublisher(
+      movementRepository.findBatchedMovementsByERN(ern)
+    ).pipe( _.map { movement =>
+      ExciseMovementResponse(
+        movement._id,
+        None,
+        movement.localReferenceNumber,
+        movement.consignorId,
+        movement.consigneeId,
+        movement.administrativeReferenceCode,
+        Some(movement.lastUpdated.asStringInMilliseconds)
+      )
+    })
 
   private def filterMovementByTraderType(movements: Seq[Movement], traderType: Option[TraderType]) =
     traderType.fold[Seq[Movement]](movements) { trader =>

@@ -18,12 +18,14 @@ package uk.gov.hmrc.excisemovementcontrolsystemapi.controllers
 
 import cats.data._
 import cats.implicits.toFlatMapOps
+import org.apache.commons.lang3.SerializationUtils
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.Materializer
-import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.stream.scaladsl.{Source, StreamConverters}
 import org.apache.pekko.util.ByteString
 import play.api.Logging
-import play.api.http.HttpEntity.Strict
+import play.api.http.HttpEntity.{Chunked, Strict}
+import play.api.http.Writeable
 import play.api.libs.json.Json
 import play.api.mvc._
 import uk.gov.hmrc.excisemovementcontrolsystemapi.controllers.actions._
@@ -57,79 +59,36 @@ class GetMovementsController @Inject() (
   messageService: MessageService,
   movementIdValidator: MovementIdValidation,
   auditService: AuditService
-)(implicit ec: ExecutionContext, materializer: Materializer)
+)(implicit ec: ExecutionContext)
     extends BackendController(cc)
     with Logging {
 
   def getMovements(
     ern: Option[String],
-    lrn: Option[String],
-    arc: Option[String],
     updatedSince: Option[String],
     traderType: Option[String]
   ): Action[AnyContent] =
-    (authAction
-      andThen correlationIdAction
-      andThen validateErnParameterAction(ern)
-      andThen validateUpdatedSinceAction(updatedSince)
-      andThen validateTraderTypeAction(traderType)).async(parse.default) { implicit request =>
-      implicit val hc: HeaderCarrier = HeaderCarrierConverter.fromRequest(request)
+    (
+      authAction andThen correlationIdAction andThen validateErnParameterAction(ern)
+      andThen validateUpdatedSinceAction(updatedSince) andThen validateTraderTypeAction(traderType)
+    ).async(parse.default) { implicit request =>
 
-      val filter =
-        MovementFilter(
-          ern,
-          lrn,
-          arc,
-          updatedSince.map(Instant.parse(_)),
-          traderType.map(trader => TraderType(trader, request.erns.toSeq))
-        )
-
-      val result = for {
-        _       <- messageService.updateAllMessages(ern.fold(request.erns)(Set(_)))
-        payload <- movementService
-                     .streamMovementsByErn(request.erns.toSeq)
-                     .pipe(sizedJsonArrayPayload)
-                     .flatTap { case (count, _) => Future.successful(audit(count, filter)) }
-                     .map(_._2)
-
-      } yield {
-        Result(ResponseHeader(OK), Strict(payload, Some("application/json")))
-      }
-
-      result.recover { case NonFatal(ex) =>
-        logger.warn(
-          s"Error getting movements for erns ${request.erns} with filters ern: $ern, lrn: $lrn, arc: $arc, updatedSince: $updatedSince, traderType: $traderType",
-          ex
-        )
-        InternalServerError(
-          Json.toJson(
-            ErrorResponse(
-              dateTimeService.timestamp(),
-              "Error getting movements",
-              "Unknown error while getting movements"
+      messageService.updateAllMessages(ern.fold(request.erns)(Set(_))).map { _ =>
+        Ok.chunked(movementService.streamMovementsByErn(request.erns.toSeq))
+      }.recover {
+        case NonFatal(ex) =>
+          logger.warn(s"Error getting movements for erns ${request.erns}", ex)
+          InternalServerError(
+            Json.toJson(
+              ErrorResponse(
+                dateTimeService.timestamp(),
+                "Error getting movements",
+                "Unknown error while getting movements"
+              )
             )
           )
-        )
       }
     }
-
-  private def audit(movementCount: Int, filter: MovementFilter)(implicit
-    request: EnrolmentRequest[AnyContent],
-    hc: HeaderCarrier
-  ): Unit =
-    auditService.getInformationForGetMovements(filter, movementCount, request)
-
-  private def sizedJsonArrayPayload(source: Source[Movement, NotUsed]): Future[(Int, ByteString)]    =
-    source
-      .map(createResponseFrom)
-      .map(Json.toJson(_).toString())
-      .grouped(2)
-      .map(group => group.size -> ByteString(group.mkString(",")))
-      .pipe(Source.single(0 -> ByteString("[")) ++ _ ++ Source.single(0 -> ByteString("]")))
-      .runFold(0 -> ByteString.empty)(foldSizedPayload)
-
-  private def foldSizedPayload(left: (Int, ByteString), right: (Int, ByteString)): (Int, ByteString) =
-    left._1 + right._1 -> left._2.concat(right._2)
 
   def getMovement(movementId: String): Action[AnyContent] =
     (authAction andThen correlationIdAction).async(parse.default) { implicit request =>

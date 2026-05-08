@@ -16,6 +16,9 @@
 
 package uk.gov.hmrc.excisemovementcontrolsystemapi.models
 
+import org.apache.commons.lang3.SerializationUtils
+import org.apache.pekko.util.ByteString
+import play.api.http.Writeable
 import play.api.libs.json.{Json, OFormat}
 
 case class ExciseMovementResponse(
@@ -30,4 +33,8 @@ case class ExciseMovementResponse(
 
 object ExciseMovementResponse {
   implicit val format: OFormat[ExciseMovementResponse] = Json.format[ExciseMovementResponse]
+
+  private def transform(emr: ExciseMovementResponse) = ByteString(SerializationUtils.serialize(emr))
+  implicit val writer: Writeable[ExciseMovementResponse] =
+    new Writeable[ExciseMovementResponse](transform, None)
 }

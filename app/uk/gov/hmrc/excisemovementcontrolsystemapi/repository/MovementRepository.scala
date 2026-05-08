@@ -20,6 +20,7 @@ import cats.implicits.toFunctorOps
 import org.apache.pekko.{Done, NotUsed}
 import org.apache.pekko.stream.scaladsl.Source
 import org.bson.conversions.Bson
+import org.mongodb.scala.FindObservable
 import org.mongodb.scala.model.Filters._
 import org.mongodb.scala.model._
 import play.api.Configuration
@@ -171,14 +172,12 @@ class MovementRepository @Inject() (
       .toFuture()
   }
 
-  def streamMovementsByERN(
+  def findBatchedMovementsByERN(
     ern: Seq[String]
-  ): Source[Movement, NotUsed] = {
+  ): FindObservable[Movement] = {
 
     val ernFilters: Seq[Bson] = getErnFilters(ern)
-    val publisher             = collection.find(and(ernFilters: _*))
-
-    Source.fromPublisher(publisher)
+    collection.find(and(ernFilters: _*)).batchSize(1000)
   }
 
   private def getErnFilters(ern: Seq[String]) =
